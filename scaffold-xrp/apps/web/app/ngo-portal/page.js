@@ -4,7 +4,8 @@ import { useState } from "react";
 import { Header } from "../../components/Header";
 import { useWallet } from "../../components/providers/WalletProvider";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
+// Use Next.js API routes instead of external backend
+const BACKEND_URL = "/api";
 
 export default function NgoPortal() {
   const { isConnected, accountInfo, showStatus } = useWallet();
