@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Header } from "../../components/Header";
 import { useWallet } from "../../components/providers/WalletProvider";
+import { useNgoWallet } from "../../hooks/useNgoWallet";
 import Link from "next/link";
 
 // Use Next.js API routes instead of external backend
@@ -16,8 +17,27 @@ const ACCESS_MODES = {
 };
 
 export default function NgoPortal() {
-  const { isConnected, accountInfo, showStatus } = useWallet();
-  const walletAddress = accountInfo?.address || null;
+  const { showStatus: showWalletStatus } = useWallet();
+  // Wallet ONG automatique - se connecte automatiquement au chargement
+  const { 
+    isInitialized: isNgoWalletReady, 
+    walletAddress: ngoWalletAddress, 
+    signAndSubmit: ngoSignAndSubmit,
+    showStatus: showNgoStatus 
+  } = useNgoWallet();
+  
+  // Utiliser le wallet ONG comme wallet principal
+  const walletAddress = ngoWalletAddress;
+  const isConnected = isNgoWalletReady;
+  
+  // Fonction pour afficher les messages de statut
+  const showStatus = (message, type) => {
+    if (showNgoStatus) {
+      showNgoStatus(message, type);
+    } else if (showWalletStatus) {
+      showWalletStatus(message, type);
+    }
+  };
 
   // État du mode d'accès
   const [accessMode, setAccessMode] = useState(ACCESS_MODES.NGO);
@@ -113,11 +133,16 @@ export default function NgoPortal() {
   const [childCredentials, setChildCredentials] = useState([]);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState({});
+  
+  // États pour la vérification
+  const [verificationResult, setVerificationResult] = useState(null);
+  const [isVerifying, setIsVerifying] = useState(false);
 
   // États de chargement
   const [isCreatingChild, setIsCreatingChild] = useState(false);
   const [isCreatingCredential, setIsCreatingCredential] = useState(false);
   const [createdChildId, setCreatedChildId] = useState(null);
+  const [blockchainInfo, setBlockchainInfo] = useState(null); // Hash et infos blockchain
 
   // Charger la liste des enfants (mode ONG)
   const loadChildren = async () => {
@@ -196,14 +221,23 @@ export default function NgoPortal() {
       return;
     }
 
+    if (!walletAddress) {
+      showStatus("Veuillez connecter le wallet ONG pour créer un enfant", "error");
+      return;
+    }
+
     setIsCreatingChild(true);
     try {
+      // Étape 1 : Créer l'enfant et obtenir le hash + transaction template
       const response = await fetch(`${BACKEND_URL}/children`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(child),
+        body: JSON.stringify({
+          ...child,
+          ngoWalletAddress: walletAddress, // Adresse du wallet ONG
+        }),
       });
 
       if (!response.ok) {
@@ -214,11 +248,19 @@ export default function NgoPortal() {
       const result = await response.json();
       setCreatedChildId(result.child.id);
       
+      // Stocker les informations blockchain
+      if (result.dataHash) {
+        setBlockchainInfo({
+          dataHash: result.dataHash,
+          transactionHash: null, // Sera rempli après la transaction
+        });
+      }
+      
       // Afficher un message avec la seed du wallet (clé privée)
       if (result.walletSeed) {
         showStatus(
-          `Enfant créé ! Wallet XRPL généré. Adresse: ${result.child.id}`,
-          "success"
+          `Enfant créé ! Wallet XRPL généré. Hash calculé. Signature en cours...`,
+          "info"
         );
         
         // Afficher un modal ou alerte avec la seed
@@ -229,6 +271,58 @@ export default function NgoPortal() {
         navigator.clipboard.writeText(result.walletSeed).then(() => {
           showStatus("Clé privée copiée dans le presse-papier", "info");
         });
+      }
+
+      // Étape 2 : Signer et envoyer la transaction XRPL
+      if (result.transactionTemplate && ngoSignAndSubmit) {
+        try {
+          showStatus("Signature et envoi de la transaction XRPL...", "info");
+          
+          // Signer et soumettre la transaction avec le wallet ONG
+          const txResult = await ngoSignAndSubmit(result.transactionTemplate);
+          
+          // Mettre à jour le backend avec le hash de la transaction
+          showStatus("Mise à jour des informations blockchain...", "info");
+          
+          const updateResponse = await fetch(`${BACKEND_URL}/children/${result.child.id}/blockchain`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              transactionHash: txResult.hash || txResult.id,
+              transactionId: txResult.id,
+              network: 'testnet',
+            }),
+          });
+
+          if (updateResponse.ok) {
+            const updateResult = await updateResponse.json();
+            setBlockchainInfo({
+              dataHash: result.dataHash,
+              transactionHash: txResult.hash || txResult.id,
+            });
+            showStatus(
+              `✅ Enfant créé et enregistré sur la blockchain XRPL !`,
+              "success"
+            );
+          } else {
+            setBlockchainInfo({
+              dataHash: result.dataHash,
+              transactionHash: txResult.hash || txResult.id,
+            });
+            showStatus(
+              `✅ Transaction envoyée sur XRPL (${txResult.hash}) mais mise à jour échouée`,
+              "warning"
+            );
+          }
+        } catch (txError) {
+          console.error("Erreur transaction blockchain:", txError);
+          showStatus(
+            `⚠️ Enfant créé mais transaction blockchain échouée: ${txError.message}. Vous pouvez réessayer plus tard.`,
+            "warning"
+          );
+        }
       } else {
         showStatus(`Enfant créé avec succès ! ID: ${result.child.id}`, "success");
       }
@@ -242,6 +336,7 @@ export default function NgoPortal() {
         gender: "",
         parentsNames: "",
       });
+      setBlockchainInfo(null);
       await loadChildren();
     } catch (error) {
       showStatus(`Erreur: ${error.message}`, "error");
@@ -408,11 +503,11 @@ export default function NgoPortal() {
             <div className="flex items-center gap-4">
               {walletAddress ? (
                 <div className="text-sm text-green-600">
-                  ✅ Wallet: {walletAddress.substring(0, 10)}...
+                  ✅ Wallet ONG connecté: {walletAddress.substring(0, 10)}...
                 </div>
               ) : (
                 <div className="text-sm text-gray-500">
-                  ⚠️ Connectez votre wallet via le header
+                  ⚠️ Connexion du wallet ONG en cours...
                 </div>
               )}
             </div>
@@ -578,6 +673,31 @@ export default function NgoPortal() {
                       <code className="font-mono text-xs bg-white p-2 rounded block break-all">{createdChildId}</code>
                     </div>
                   </div>
+                  {blockchainInfo && (
+                    <div className="space-y-2">
+                      <div>
+                        <strong>Hash des données (SHA-256):</strong>
+                        <div className="mt-1">
+                          <code className="font-mono text-xs bg-white p-2 rounded block break-all">
+                            {blockchainInfo.dataHash}
+                          </code>
+                        </div>
+                      </div>
+                      {blockchainInfo.transactionHash && (
+                        <div>
+                          <strong>Transaction XRPL:</strong>
+                          <div className="mt-1">
+                            <code className="font-mono text-xs bg-white p-2 rounded block break-all">
+                              {blockchainInfo.transactionHash}
+                            </code>
+                          </div>
+                          <p className="text-xs mt-1 text-green-600">
+                            ✅ Hash enregistré sur la blockchain XRPL
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="text-xs text-yellow-700 bg-yellow-50 p-3 rounded border border-yellow-200">
                     <strong>⚠️ IMPORTANT - Instructions pour utiliser le wallet :</strong>
                     <ol className="list-decimal list-inside mt-2 space-y-1">
@@ -619,6 +739,14 @@ export default function NgoPortal() {
                         </div>
                         <div className="flex gap-2">
                           <button
+                            onClick={() => verifyChild(c.id)}
+                            disabled={isVerifying}
+                            className="btn-secondary text-sm disabled:bg-gray-400"
+                            title="Vérifier le hash et la transaction XRPL"
+                          >
+                            {isVerifying ? "Vérification..." : "🔍 Vérifier"}
+                          </button>
+                          <button
                             onClick={() => {
                               setViewingChild(c);
                               loadChildDetails(c.id);
@@ -633,6 +761,116 @@ export default function NgoPortal() {
                   </div>
                 )}
               </div>
+
+              {/* Résultats de vérification */}
+              {verificationResult && (
+                <div className="card">
+                  <h2 className="text-xl font-semibold mb-4">🔍 Résultats de la vérification</h2>
+                  <div className="space-y-4">
+                    <div className={`p-4 rounded-lg ${verificationResult.verification.integrity ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                      <div className="flex items-center gap-2 mb-2">
+                        {verificationResult.verification.integrity ? (
+                          <span className="text-2xl">✅</span>
+                        ) : (
+                          <span className="text-2xl">❌</span>
+                        )}
+                        <strong className={verificationResult.verification.integrity ? 'text-green-800' : 'text-red-800'}>
+                          {verificationResult.verification.integrity 
+                            ? 'Données intègres - Aucune modification détectée' 
+                            : 'Attention - Données modifiées ou transaction non trouvée'}
+                        </strong>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="p-4 bg-gray-50 rounded-lg">
+                        <h3 className="font-semibold mb-2">Hash calculé (actuel)</h3>
+                        <code className="text-xs break-all block bg-white p-2 rounded">
+                          {verificationResult.verification.calculatedHash}
+                        </code>
+                      </div>
+
+                      <div className="p-4 bg-gray-50 rounded-lg">
+                        <h3 className="font-semibold mb-2">Hash stocké (MongoDB)</h3>
+                        {verificationResult.verification.storedHash ? (
+                          <>
+                            <code className="text-xs break-all block bg-white p-2 rounded">
+                              {verificationResult.verification.storedHash}
+                            </code>
+                            <p className={`text-xs mt-2 ${verificationResult.verification.hashMatch ? 'text-green-600' : 'text-red-600'}`}>
+                              {verificationResult.verification.hashMatch ? '✅ Correspond' : '❌ Ne correspond pas'}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-gray-500 text-sm">Aucun hash stocké</p>
+                        )}
+                      </div>
+
+                      <div className="p-4 bg-gray-50 rounded-lg">
+                        <h3 className="font-semibold mb-2">Hash blockchain (XRPL)</h3>
+                        {verificationResult.verification.blockchainHash ? (
+                          <>
+                            <code className="text-xs break-all block bg-white p-2 rounded">
+                              {verificationResult.verification.blockchainHash}
+                            </code>
+                            <p className={`text-xs mt-2 ${verificationResult.verification.blockchainVerified ? 'text-green-600' : 'text-red-600'}`}>
+                              {verificationResult.verification.blockchainVerified ? '✅ Vérifié sur XRPL' : '❌ Ne correspond pas'}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-gray-500 text-sm">
+                            {verificationResult.child.blockchainTxHash 
+                              ? 'Transaction trouvée mais hash non récupéré' 
+                              : 'Aucune transaction XRPL trouvée'}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="p-4 bg-gray-50 rounded-lg">
+                        <h3 className="font-semibold mb-2">Transaction XRPL</h3>
+                        {verificationResult.transaction ? (
+                          <div className="space-y-1 text-sm">
+                            <p><strong>Hash:</strong> <code className="text-xs">{verificationResult.transaction.hash}</code></p>
+                            <p><strong>Ledger:</strong> {verificationResult.transaction.ledger_index}</p>
+                            <p><strong>Validée:</strong> {verificationResult.transaction.validated ? '✅ Oui' : '⏳ En attente'}</p>
+                            <p><strong>Montant:</strong> {verificationResult.transaction.Amount} drops</p>
+                            <a 
+                              href={`https://testnet.xrpl.org/transactions/${verificationResult.transaction.hash}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline text-xs"
+                            >
+                              Voir sur XRPL Explorer →
+                            </a>
+                          </div>
+                        ) : (
+                          <p className="text-gray-500 text-sm">Aucune transaction trouvée</p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                      <h3 className="font-semibold mb-2">Informations de l'enfant</h3>
+                      <div className="text-sm space-y-1">
+                        <p><strong>ID:</strong> <code className="text-xs">{verificationResult.child.id}</code></p>
+                        <p><strong>Alias:</strong> {verificationResult.child.alias || 'N/A'}</p>
+                        <p><strong>Nom:</strong> {verificationResult.child.fullName || 'N/A'}</p>
+                        <p><strong>Wallet activé:</strong> {verificationResult.child.isWalletActivated ? '✅ Oui' : '❌ Non'}</p>
+                        {verificationResult.child.blockchainTxHash && (
+                          <p><strong>Transaction:</strong> <code className="text-xs">{verificationResult.child.blockchainTxHash}</code></p>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => setVerificationResult(null)}
+                      className="btn-secondary w-full"
+                    >
+                      Fermer
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Création attestation */}
               <div id="create-credential" className="card">
