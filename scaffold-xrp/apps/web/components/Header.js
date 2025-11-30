@@ -15,9 +15,9 @@ export function Header() {
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
             <Link href="/ngo-portal" className="flex items-center space-x-2">
-              <div className="w-10 h-10 bg-xrpl rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-xl">X</span>
-              </div>
+            <div className="w-10 h-10 bg-xrpl rounded-lg flex items-center justify-center">
+              <span className="text-white font-bold text-xl">X</span>
+            </div>
               <span className="text-xl font-bold">XRPLRoot - Portail ONG</span>
             </Link>
           </div>

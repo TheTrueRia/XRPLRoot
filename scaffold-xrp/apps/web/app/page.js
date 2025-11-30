@@ -11,11 +11,6 @@ export default function Home() {
     router.replace("/ngo-portal");
   }, [router]);
 
-  return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="text-center">
-        <p className="text-gray-600">Redirection vers le portail ONG...</p>
-      </div>
-    </div>
-  );
+  // Redirection immédiate sans afficher de message
+  return null;
 }

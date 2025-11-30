@@ -49,6 +49,10 @@ export async function POST(request, { params }) {
       data: body.data,
       signerAddress: body.signerAddress,
       signature: body.signature || null, // Signature XRPL if provided
+      // Fichier joint (stocké en base64)
+      file: body.file || null, // Base64 string
+      fileName: body.fileName || null,
+      fileType: body.fileType || null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };

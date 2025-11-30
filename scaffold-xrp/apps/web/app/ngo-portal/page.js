@@ -104,6 +104,8 @@ export default function NgoPortal() {
     childId: "",
     type: "vaccination",
     data: "",
+    file: null,
+    fileName: "",
   });
 
   // États pour la visualisation d'un enfant
@@ -211,7 +213,25 @@ export default function NgoPortal() {
 
       const result = await response.json();
       setCreatedChildId(result.child.id);
-      showStatus(`Enfant créé avec succès ! ID: ${result.child.id}`, "success");
+      
+      // Afficher un message avec la seed du wallet (clé privée)
+      if (result.walletSeed) {
+        showStatus(
+          `Enfant créé ! Wallet XRPL généré. Adresse: ${result.child.id}`,
+          "success"
+        );
+        
+        // Afficher un modal ou alerte avec la seed
+        const seedMessage = `⚠️ IMPORTANT - Sauvegardez cette clé privée (seed) de manière sécurisée :\n\n${result.walletSeed}\n\nCette information ne sera plus affichée.`;
+        alert(seedMessage);
+        
+        // Optionnel : copier dans le presse-papier
+        navigator.clipboard.writeText(result.walletSeed).then(() => {
+          showStatus("Clé privée copiée dans le presse-papier", "info");
+        });
+      } else {
+        showStatus(`Enfant créé avec succès ! ID: ${result.child.id}`, "success");
+      }
       
       // Réinitialiser et recharger la liste
       setChild({
@@ -259,6 +279,33 @@ export default function NgoPortal() {
     }
   };
 
+  // Gérer le téléversement de fichier
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      // Vérifier la taille (max 10MB)
+      if (file.size > 10 * 1024 * 1024) {
+        showStatus("Le fichier est trop volumineux (max 10MB)", "error");
+        return;
+      }
+      setCredential({
+        ...credential,
+        file: file,
+        fileName: file.name,
+      });
+    }
+  };
+
+  // Convertir le fichier en base64
+  const fileToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
   // Créer une attestation
   const createCredential = async () => {
     if (!walletAddress) {
@@ -273,6 +320,14 @@ export default function NgoPortal() {
 
     setIsCreatingCredential(true);
     try {
+      // Convertir le fichier en base64 si présent
+      let fileBase64 = null;
+      let fileType = null;
+      if (credential.file) {
+        fileBase64 = await fileToBase64(credential.file);
+        fileType = credential.file.type;
+      }
+
       const response = await fetch(`${BACKEND_URL}/children/${credential.childId}/credentials`, {
         method: "POST",
         headers: {
@@ -282,6 +337,9 @@ export default function NgoPortal() {
           type: credential.type,
           data: credential.data,
           signerAddress: walletAddress,
+          file: fileBase64,
+          fileName: credential.fileName,
+          fileType: fileType,
         }),
       });
 
@@ -298,7 +356,13 @@ export default function NgoPortal() {
         childId: "",
         type: "vaccination",
         data: "",
+        file: null,
+        fileName: "",
       });
+      // Réinitialiser l'input file
+      const fileInput = document.getElementById("credential-file");
+      if (fileInput) fileInput.value = "";
+      
       if (viewingChild) {
         await loadChildDetails(viewingChild.id);
       }
@@ -310,13 +374,6 @@ export default function NgoPortal() {
     }
   };
 
-  // Générer un code de visualisation
-  const generateViewCode = (childId) => {
-    // Générer un code unique basé sur l'ID de l'enfant
-    const code = `view_${childId.replace("child_", "")}_${Math.random().toString(36).substring(2, 10)}`;
-    showStatus(`Code généré: ${code}`, "success");
-    return code;
-  };
 
   // Charger les enfants au démarrage (mode ONG)
   useEffect(() => {
@@ -510,11 +567,34 @@ export default function NgoPortal() {
                     {isCreatingChild ? "Création en cours..." : "Créer le dossier enfant"}
                   </button>
 
-                  {createdChildId && (
-                    <div className="p-3 bg-green-50 rounded-lg text-sm text-green-700">
-                      ✅ Enfant créé ! ID: <code className="font-mono">{createdChildId}</code>
+              {createdChildId && (
+                <div className="p-4 bg-green-50 rounded-lg text-sm text-green-700 space-y-3">
+                  <div>
+                    ✅ <strong>Enfant créé ! Wallet XRPL généré</strong>
+                  </div>
+                  <div>
+                    <strong>Adresse XRPL (ID):</strong>
+                    <div className="mt-1">
+                      <code className="font-mono text-xs bg-white p-2 rounded block break-all">{createdChildId}</code>
                     </div>
-                  )}
+                  </div>
+                  <div className="text-xs text-yellow-700 bg-yellow-50 p-3 rounded border border-yellow-200">
+                    <strong>⚠️ IMPORTANT - Instructions pour utiliser le wallet :</strong>
+                    <ol className="list-decimal list-inside mt-2 space-y-1">
+                      <li>La clé privée (seed) a été affichée dans une alerte et copiée dans le presse-papier</li>
+                      <li><strong>Sauvegardez-la de manière sécurisée</strong> - elle ne sera plus affichée</li>
+                      <li>Pour utiliser le wallet :</li>
+                      <ul className="list-disc list-inside ml-4 mt-1 space-y-1">
+                        <li>Ouvrez l'extension <strong>GemWallet</strong> dans votre navigateur</li>
+                        <li>Cliquez sur "Import Wallet" ou "Restore Wallet"</li>
+                        <li>Collez la seed récupérée</li>
+                        <li>Le wallet sera importé avec l'adresse ci-dessus</li>
+                      </ul>
+                      <li>Une fois importé, l'enfant peut se connecter sur ce portail avec GemWallet</li>
+                    </ol>
+                  </div>
+                </div>
+              )}
                 </div>
               </div>
 
@@ -547,16 +627,6 @@ export default function NgoPortal() {
                           >
                             Voir détails
                           </button>
-                          <button
-                            onClick={() => {
-                              const code = generateViewCode(c.id);
-                              navigator.clipboard.writeText(code);
-                              showStatus("Code copié dans le presse-papier", "success");
-                            }}
-                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
-                          >
-                            Générer code
-                          </button>
                         </div>
                       </div>
                     ))}
@@ -575,7 +645,7 @@ export default function NgoPortal() {
                       </label>
                       <input
                         className="input"
-                        placeholder="child_xxxxxx"
+                        placeholder="rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
                         value={credential.childId}
                         onChange={(e) => setCredential({ ...credential, childId: e.target.value })}
                       />
@@ -608,6 +678,46 @@ export default function NgoPortal() {
                         onChange={(e) => setCredential({ ...credential, data: e.target.value })}
                       />
                     </div>
+                  </div>
+
+                  {/* Champ de téléversement de fichier */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Document joint (PDF, image, etc.) - Optionnel
+                    </label>
+                    <div className="flex items-center gap-4">
+                      <input
+                        id="credential-file"
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                        onChange={handleFileChange}
+                        className="block w-full text-sm text-gray-500
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-lg file:border-0
+                          file:text-sm file:font-semibold
+                          file:bg-accent file:text-white
+                          hover:file:bg-accent/90
+                          cursor-pointer"
+                      />
+                      {credential.fileName && (
+                        <div className="text-sm text-gray-600">
+                          📄 {credential.fileName}
+                          <button
+                            onClick={() => {
+                              setCredential({ ...credential, file: null, fileName: "" });
+                              const fileInput = document.getElementById("credential-file");
+                              if (fileInput) fileInput.value = "";
+                            }}
+                            className="ml-2 text-red-500 hover:text-red-700"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Formats acceptés : PDF, JPG, PNG, DOC, DOCX (max 10MB)
+                    </p>
                   </div>
 
                   <div className="flex items-center gap-4">
@@ -752,22 +862,58 @@ export default function NgoPortal() {
                       <p className="text-gray-500">Aucune attestation enregistrée</p>
                     ) : (
                       <div className="space-y-2">
-                        {childCredentials.map((cred) => (
-                          <div key={cred.id} className="p-3 border rounded">
-                            <div className="flex justify-between items-start">
-                              <div>
-                                <p className="font-medium">{cred.type}</p>
-                                <p className="text-sm text-gray-600 mt-1">{cred.data}</p>
-                                <p className="text-xs text-gray-500 mt-1">
-                                  Signé par: {cred.signerAddress?.substring(0, 10)}...
-                                </p>
+                        {childCredentials.map((cred) => {
+                          // Fonction pour télécharger le fichier
+                          const downloadFile = () => {
+                            if (cred.file && cred.fileName) {
+                              // Convertir base64 en blob
+                              const byteCharacters = atob(cred.file.split(',')[1]);
+                              const byteNumbers = new Array(byteCharacters.length);
+                              for (let i = 0; i < byteCharacters.length; i++) {
+                                byteNumbers[i] = byteCharacters.charCodeAt(i);
+                              }
+                              const byteArray = new Uint8Array(byteNumbers);
+                              const blob = new Blob([byteArray], { type: cred.fileType || 'application/octet-stream' });
+                              
+                              // Créer un lien de téléchargement
+                              const url = window.URL.createObjectURL(blob);
+                              const link = document.createElement('a');
+                              link.href = url;
+                              link.download = cred.fileName;
+                              document.body.appendChild(link);
+                              link.click();
+                              document.body.removeChild(link);
+                              window.URL.revokeObjectURL(url);
+                            }
+                          };
+
+                          return (
+                            <div key={cred.id} className="p-3 border rounded">
+                              <div className="flex justify-between items-start">
+                                <div className="flex-1">
+                                  <p className="font-medium">{cred.type}</p>
+                                  <p className="text-sm text-gray-600 mt-1">{cred.data}</p>
+                                  {cred.fileName && (
+                                    <div className="mt-2">
+                                      <button
+                                        onClick={downloadFile}
+                                        className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                                      >
+                                        📄 Télécharger {cred.fileName}
+                                      </button>
+                                    </div>
+                                  )}
+                                  <p className="text-xs text-gray-500 mt-1">
+                                    Signé par: {cred.signerAddress?.substring(0, 10)}...
+                                  </p>
+                                </div>
+                                <span className="text-xs text-gray-500">
+                                  {new Date(cred.createdAt).toLocaleDateString()}
+                                </span>
                               </div>
-                              <span className="text-xs text-gray-500">
-                                {new Date(cred.createdAt).toLocaleDateString()}
-                              </span>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
